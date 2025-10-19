@@ -26,11 +26,6 @@ CRM_API_TOKEN = ""
 
 POSTGRES_CONN_STRING = "postgresql+psycopg2://airflow:airflow@localhost:5433/airflow_db"
 
-# --- FIM DA CONFIGURAÇÃO ---
-
-
-# --- 3. O "MOTOR" DE EXTRAÇÃO (Core Helpers) ---
-
 MAX_THREADS = 8
 PAGE_LIMIT = 250
 

@@ -71,7 +71,7 @@ def _load_to_postgres(df: pd.DataFrame, table_name: str):
     df.to_sql(
         name=table_name,
         con=engine,
-        if_exists="append", # <-- Lógica INCREMENTAL
+        if_exists="append", # <-- Lógica INCREMENTAL CORRETA (sem TRUNCATE)
         index=False,
         schema=DW_SCHEMA
     )
@@ -98,8 +98,11 @@ with DAG(
         @task(task_id="extract_leads")
         def extract_leads(data_interval_start: str, data_interval_end: str) -> dict:
             base_url, api_token = _get_api_credentials()
+            
+            # --- CÓDIGO INCREMENTAL CORRETO (USA AS DATAS DO AIRFLOW) ---
             start_date_dt = datetime.fromisoformat(data_interval_start)
             end_date_dt = datetime.fromisoformat(data_interval_end)
+            # --- FIM DA LÓGICA CORRETA ---
 
             log.info(f"Iniciando extração de Leads para o intervalo: {start_date_dt} a {end_date_dt}")
             df_leads, df_custom_fields, df_tags = run_leads_extraction(
@@ -117,6 +120,7 @@ with DAG(
 
         @task(task_id="load_leads")
         def load_leads(dataframes_dict: dict):
+            # --- LÓGICA DE CARGA CORRETA (SEM TRUNCATE) ---
             _load_to_postgres(dataframes_dict['leads'], "stg_crm_leads")
             _load_to_postgres(dataframes_dict['custom_fields'], "stg_crm_leads_custom_fields")
             _load_to_postgres(dataframes_dict['tags'], "stg_crm_leads_tags")
@@ -138,8 +142,11 @@ with DAG(
         @task(task_id="extract_events")
         def extract_events(data_interval_start: str, data_interval_end: str) -> pd.DataFrame:
             base_url, api_token = _get_api_credentials()
+            
+            # --- CÓDIGO INCREMENTAL CORRETO (USA AS DATAS DO AIRFLOW) ---
             start_date_dt = datetime.fromisoformat(data_interval_start)
             end_date_dt = datetime.fromisoformat(data_interval_end)
+            # --- FIM DA LÓGICA CORRETA ---
             
             log.info(f"Iniciando extração de Events para o intervalo: {start_date_dt} a {end_date_dt}")
             df_events = run_events_extraction(
@@ -153,6 +160,7 @@ with DAG(
 
         @task(task_id="load_events")
         def load_events(df: pd.DataFrame):
+             # --- LÓGICA DE CARGA CORRETA (SEM TRUNCATE) ---
             _load_to_postgres(df, "stg_crm_events")
 
         @task(task_id="transform_events")
@@ -168,5 +176,4 @@ with DAG(
         loaded_result_events >> transform_events()
 
     # --- Definindo o Fluxo da DAG ---
-    # Os dois grupos de fatos rodam em paralelo
     [leads_group, events_group]
