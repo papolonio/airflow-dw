@@ -102,6 +102,25 @@ services:
       start_period: 5s
     restart: always
 
+  # --- ADICIONADO: Serviço Postgres para o Data Warehouse ---
+  postgres-dw:
+    image: postgres:14
+    container_name: postgres-dw
+    ports:
+      - "5433:5432" # Expõe o DW na porta 5433 da sua máquina
+    environment:
+      - POSTGRES_USER=airflow
+      - POSTGRES_PASSWORD=airflow
+      - POSTGRES_DB=airflow_db
+    volumes:
+      - postgres_dw_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U airflow -d airflow_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+  # --- FIM DA ADIÇÃO ---
+
   redis:
     # Redis is limited to 7.2-bookworm due to licencing change
     # https://redis.io/blog/redis-adopts-dual-source-available-licensing/
@@ -334,3 +353,4 @@ services:
 
 volumes:
   postgres-db-volume:
+  postgres_dw_data: # <-- ADICIONADO: Volume para o DW

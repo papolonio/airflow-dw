@@ -1,4 +1,4 @@
-# Conteúdo para: include/crm_extractor/leads_extractor.py
+# Conteúdo COMPLETO para: plugins/crm_extractor/extractor.py
 import requests
 import pandas as pd
 import json
@@ -15,9 +15,10 @@ MAX_THREADS = 8
 PAGE_LIMIT = 250
 log = logging.getLogger(__name__)
 
+# --- 1. CORE EXTRACTION HELPERS (O que já tínhamos) ---
 
 def create_session_with_retries(token: str) -> requests.Session:
-
+    """Cria uma sessão de requests com retries automáticos."""
     session = requests.Session()
     session.headers.update({
         "Accept": "application/json",
@@ -42,8 +43,9 @@ def fetch_api_page(session: requests.Session, url: str, params: Dict[str, Any]) 
         response.raise_for_status()
         return response.json()
     except requests.exceptions.HTTPError as e:
-        if e.response.status_code == 404:
-             log.info(f"Página não encontrada (404) em {url} com params {params}. Fim da paginação.")
+        # Status 204 (No Content) é esperado quando uma página não tem dados
+        if e.response.status_code == 404 or e.response.status_code == 204:
+             log.info(f"Página não encontrada ou sem conteúdo ({e.response.status_code}) em {url} com params {params}. Fim.")
         else:
              log.warning(f"Erro HTTP {e.response.status_code} de {url} com params {params}: {e.response.text}")
     except JSONDecodeError as e:
@@ -120,7 +122,6 @@ def fetch_all_pages_concurrently(
         total_rows = sum(len(df) for df in all_dfs)
         log.info(f"Busca concorrente: {total_rows} linhas coletadas até a página {page + tasks_submitted - 1}.")
         page += tasks_submitted
-        # time.sleep(1) # Descomente se a API for muito sensível
 
     if not all_dfs:
         log.warning(f"Nenhum dado encontrado para {base_url}")
@@ -129,7 +130,8 @@ def fetch_all_pages_concurrently(
     log.info(f"Concatenação final de {len(all_dfs)} dataframes de página.")
     return pd.concat(all_dfs, ignore_index=True)
 
-# --- LEADS: Funções Específicas ---
+
+# --- 2. LÓGICA DO ENDPOINT: LEADS (O que já tínhamos) ---
 
 def parse_leads_data(leads_items: List[Dict]) -> List[Dict]:
     """Parseia a lista de 'leads' da API em dicionários planos."""
@@ -175,11 +177,10 @@ def post_process_leads_df(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame,
     time_cols = ['created_at', 'updated_at', 'closed_at']
     for col in time_cols:
         df_leads_all[col] = pd.to_datetime(df_leads_all[col], unit='s', utc=True, errors='coerce')
-        # Tenta converter para São Paulo, se falhar (ex: NaT), mantém NaT
         try:
             df_leads_all[col] = df_leads_all[col].dt.tz_convert('America/Sao_Paulo')
         except Exception:
-             pass # Mantém NaT ou o que quer que seja
+             pass
 
     # --- 2. Conversão de Listas para Strings ---
     log.info("Processando: Conversão de listas de IDs para string...")
@@ -230,19 +231,13 @@ def post_process_leads_df(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame,
     log.info("Pós-processamento de Leads concluído.")
     return df_leads, df_custom_fields, df_tags
 
-# --- FUNÇÃO PRINCIPAL DO EXTRATOR ---
-
 def run_leads_extraction(
     base_url: str, 
     api_token: str, 
     start_date: Optional[datetime] = None, 
     end_date: Optional[datetime] = None
 ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """
-    Função principal para extração de Leads.
-    Orquestra a busca, o parse e o pós-processamento.
-    Aceita datas para filtro incremental.
-    """
+    """Função principal para extração de Leads."""
     log.info("--- Iniciando Extração de LEADS ---")
     
     base_params = {
@@ -252,8 +247,6 @@ def run_leads_extraction(
         ts_from = int(start_date.timestamp())
         ts_to = int(end_date.timestamp())
         log.info(f"Execução incremental: de {start_date} (ts {ts_from}) até {end_date} (ts {ts_to})")
-        
-        # Filtro da API (ex: Kommo) por 'updated_at'
         base_params["filter[updated_at][from]"] = ts_from
         base_params["filter[updated_at][to]"] = ts_to
     else:
@@ -264,7 +257,7 @@ def run_leads_extraction(
     try:
         df_leads_all_raw = fetch_all_pages_concurrently(
             session=session,
-            base_url=f"{base_url}/leads",
+            base_url=f"{base_url}/api/v4/leads",
             base_params=base_params,
             embed_key="leads",
             parse_func=parse_leads_data
@@ -283,3 +276,244 @@ def run_leads_extraction(
     
     log.info("--- Extração de LEADS Concluída ---")
     return df_leads, df_custom_fields, df_tags
+
+
+# --- 3. LÓGICA DO ENDPOINT: EVENTS (NOVO) ---
+
+def parse_events_data(events_items: List[Dict]) -> List[Dict]:
+    """Função de parse específica para o endpoint /events."""
+    parsed_list = []
+    for event in events_items:
+        try:
+            if event.get("type") != 'lead_status_changed':
+                continue
+                
+            value_after = event.get('value_after', [{}])[0]
+            lead_status = value_after.get('lead_status', {})
+            lead_status_after = lead_status.get('id')
+            pipeline = lead_status.get('pipeline_id')
+            
+            if not lead_status_after:
+                continue
+
+            parsed_list.append({
+                "id": event.get("id"),
+                "type": event.get("type"),
+                "entity_id": event.get("entity_id"),
+                "created_at": event.get("created_at"),
+                "status_id": lead_status_after,
+                'pipeline_id': pipeline
+            })
+        except (IndexError, TypeError, AttributeError) as e:
+            log.warning(f"Erro ao parsear evento ID {event.get('id')}: {e}. Pulando.")
+    return parsed_list
+
+def run_events_extraction(
+    base_url: str, 
+    api_token: str, 
+    start_date: Optional[datetime] = None, 
+    end_date: Optional[datetime] = None
+) -> pd.DataFrame:
+    """Função principal para extração de Events."""
+    log.info("--- Iniciando Extração de EVENTS ---")
+    
+    base_params = {'filter[type]': 'lead_status_changed'}
+    if start_date and end_date:
+        ts_from = int(start_date.timestamp())
+        ts_to = int(end_date.timestamp())
+        log.info(f"Execução incremental: de {start_date} (ts {ts_from}) até {end_date} (ts {ts_to})")
+        base_params['filter[created_at][from]'] = ts_from
+        base_params['filter[created_at][to]'] = ts_to
+    else:
+        log.warning("Execução em MODO FULL REFRESH (sem filtro de data).")
+
+    session = create_session_with_retries(api_token)
+    try:
+        df_events = fetch_all_pages_concurrently(
+            session=session,
+            base_url=f"{base_url}/events",
+            base_params=base_params,
+            embed_key="events",
+            parse_func=parse_events_data
+        )
+    finally:
+        session.close()
+
+    if not df_events.empty:
+        log.info(f"Total de {len(df_events)} eventos baixados. Processando...")
+        df_events['created_at'] = pd.to_datetime(df_events['created_at'], unit='s', utc=True, errors='coerce')
+        df_events['created_at'] = df_events['created_at'].dt.tz_convert('America/Sao_Paulo')
+        df_events.drop_duplicates(subset=['id'], inplace=True, ignore_index=True)
+    
+    log.info("--- Extração de EVENTS Concluída ---")
+    return df_events
+
+# --- 4. LÓGICA DO ENDPOINT: PIPELINES (NOVO) ---
+
+def parse_pipelines_data(pipelines_items: List[Dict]) -> List[Dict]:
+    """Parseia /leads/pipelines, explodindo 'statuses'."""
+    parsed_list = []
+    for pipeline in pipelines_items:
+        pipeline_id = pipeline.get("id")
+        pipeline_name = pipeline.get("name")
+        statuses = pipeline.get('_embedded', {}).get('statuses', [])
+        for status in statuses:
+            parsed_list.append({
+                "pipeline_id": pipeline_id,
+                "pipeline_name": pipeline_name,
+                "status_id": status.get('id'),
+                "status_name": status.get('name'),
+                "status_sort": status.get('sort'),
+                "status_color": status.get('color'),
+            })
+    return parsed_list
+
+def run_pipelines_extraction(base_url: str, api_token: str) -> pd.DataFrame:
+    """Função principal para extração de Pipelines. (Não paginado)"""
+    log.info("--- Iniciando Extração de PIPELINES ---")
+    url = f"{base_url}/leads/pipelines"
+    session = create_session_with_retries(api_token)
+    
+    try:
+        data = fetch_api_page(session, url, params={})
+    finally:
+        session.close()
+    
+    df_pipelines_status = pd.DataFrame()
+    if data:
+        items = data.get("_embedded", {}).get("pipelines", [])
+        if items:
+            parsed_data = parse_pipelines_data(items)
+            df_pipelines_status = pd.DataFrame(parsed_data)
+            df_pipelines_status.drop_duplicates(subset=['status_id'], inplace=True, ignore_index=True)
+        else:
+            log.warning("Nenhum pipeline encontrado.")
+    else:
+        log.error("Falha ao buscar dados de pipelines.")
+        
+    log.info(f"--- Extração de PIPELINES Concluída. {len(df_pipelines_status)} status encontrados. ---")
+    return df_pipelines_status
+
+# --- 5. LÓGICA DO ENDPOINT: USERS (NOVO) ---
+
+def parse_users_data(users_items: List[Dict]) -> List[Dict]:
+    """Função de parse específica para /users."""
+    return [
+        {"id": user.get("id"), "name": user.get("name")}
+        for user in users_items if user.get("id")
+    ]
+
+def run_users_extraction(base_url: str, api_token: str) -> pd.DataFrame:
+    """Função principal para extração de Users. (Paginado)"""
+    log.info("--- Iniciando Extração de USERS ---")
+    session = create_session_with_retries(api_token)
+    try:
+        df_users = fetch_all_pages_concurrently(
+            session=session,
+            base_url=f"{base_url}/users",
+            base_params={},
+            embed_key="users",
+            parse_func=parse_users_data
+        )
+    finally:
+        session.close()
+    
+    log.info(f"--- Extração de USERS Concluída. {len(df_users)} usuários encontrados. ---")
+    return df_users
+
+# --- 6. LÓGICA DO ENDPOINT: CATALOGS (NOVO) ---
+
+def parse_catalogs_data(catalogs_items: List[Dict]) -> List[Dict]:
+    """Parseia a lista de catálogos-pai."""
+    return [
+        {"id": c.get("id"), "name": c.get("name"), "type": c.get("type")}
+        for c in catalogs_items if c.get("id")
+    ]
+
+def parse_catalog_elements_data(elements_items: List[Dict], catalog_id: int) -> List[Dict]:
+    """Parseia os elementos de um catálogo específico."""
+    parsed_list = []
+    for element in elements_items:
+        custom_fields = element.get('custom_fields_values', [])
+        if not custom_fields:
+            continue
+            
+        for field in custom_fields:
+            parsed_list.append({
+                "id": element.get('id'),
+                "name": element.get('name'),
+                "catalog_id": catalog_id,
+                "field_id": field.get('field_id'),
+                "field_name": field.get('field_name', ''),
+                "value": field.get('values')[0].get('value') if field.get('values') else None,
+            })
+    return parsed_list
+
+def fetch_elements_for_one_catalog(session: requests.Session, base_url: str, catalog_id: int) -> List[Dict]:
+    """Worker que busca TODOS os elementos de UM catálogo (paginação sequencial)."""
+    all_elements = []
+    page = 1
+    url = f"{base_url}/catalogs/{catalog_id}/elements"
+    log.info(f"CATALOGS: Iniciando busca para catalog_id {catalog_id}...")
+    
+    while True:
+        params = {'page': page, 'limit': PAGE_LIMIT}
+        data = fetch_api_page(session, url, params)
+        if not data: break
+        items = data.get("_embedded", {}).get("elements", [])
+        if not items: break
+            
+        all_elements.extend(parse_catalog_elements_data(items, catalog_id))
+        page += 1
+        
+    log.info(f"CATALOGS: Concluída busca para catalog_id {catalog_id}. Total: {len(all_elements)} elementos.")
+    return all_elements
+
+def run_catalogs_extraction(base_url: str, api_token: str) -> pd.DataFrame:
+    """Função principal para extração de Catalogs e seus Elementos."""
+    log.info("--- Iniciando Extração de CATALOGS ---")
+    session = create_session_with_retries(api_token)
+    try:
+        # 1. Buscar todos os catálogos-pai (em paralelo)
+        df_catalogs_list = fetch_all_pages_concurrently(
+            session=session,
+            base_url=f"{base_url}/catalogs",
+            base_params={},
+            embed_key="catalogs",
+            parse_func=parse_catalogs_data
+        )
+        
+        if df_catalogs_list.empty:
+            log.warning("Nenhum catálogo encontrado. Encerrando.")
+            return pd.DataFrame()
+
+        catalog_ids = df_catalogs_list["id"].tolist()
+        log.info(f"Encontrados {len(catalog_ids)} catálogos. Buscando elementos em paralelo...")
+        
+        # 2. Buscar elementos para cada catálogo (em paralelo)
+        all_elements_data = []
+        with ThreadPoolExecutor(max_workers=MAX_THREADS) as executor:
+            futures = {
+                executor.submit(fetch_elements_for_one_catalog, session, base_url, cid): cid
+                for cid in catalog_ids
+            }
+            for future in as_completed(futures):
+                try:
+                    elements_list = future.result()
+                    if elements_list:
+                        all_elements_data.extend(elements_list)
+                except Exception as e:
+                    cid = futures[future]
+                    log.error(f"Erro ao processar elementos do catalog_id {cid}: {e}", exc_info=True)
+                    
+        if not all_elements_data:
+            log.warning("Nenhum elemento de catálogo foi encontrado.")
+            return pd.DataFrame()
+
+        df_catalogs_elements = pd.DataFrame(all_elements_data)
+        
+    finally:
+        session.close()
+        
+    log.info(f"--- Extração de CATALOGS Concluída. {len(df_catalogs_elements)} elementos encontrados. ---")
+    return df_catalogs_elements
