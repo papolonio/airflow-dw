@@ -82,7 +82,7 @@ def _load_to_postgres(df: pd.DataFrame, table_name: str):
 with DAG(
     dag_id="crm_dimensions_ingestion",
     default_args=default_args,
-    start_date=datetime(2024, 1, 1),
+    start_date=datetime(2025, 1, 1),
     schedule="0 3 * * *",  # Todo dia às 3 da manhã
     catchup=False, # <-- MELHOR PRÁTICA: Full Refresh não faz backfill
     tags=["crm", "ingestion", "dimensions", "elt"],

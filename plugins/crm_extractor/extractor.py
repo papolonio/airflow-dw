@@ -257,7 +257,7 @@ def run_leads_extraction(
     try:
         df_leads_all_raw = fetch_all_pages_concurrently(
             session=session,
-            base_url=f"{base_url}/leads",
+            base_url=f"{base_url}/api/v4/leads",
             base_params=base_params,
             embed_key="leads",
             parse_func=parse_leads_data
