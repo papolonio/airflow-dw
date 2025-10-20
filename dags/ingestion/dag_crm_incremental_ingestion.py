@@ -9,7 +9,6 @@ from airflow.exceptions import AirflowNotFoundException
 from airflow.providers.postgres.hooks.postgres import PostgresHook
 from airflow.utils.task_group import TaskGroup
 
-# Importa as funções específicas do nosso "motor"
 from crm_extractor.extractor import (
     run_leads_extraction,
     run_events_extraction
@@ -17,12 +16,10 @@ from crm_extractor.extractor import (
 
 log = logging.getLogger(__name__)
 
-# --- Constantes ---
 API_CONN_ID = "crm_kommo_api"
 DW_CONN_ID = "postgres_dw"
-DW_SCHEMA = "public" # Schema de Staging
+DW_SCHEMA = "public" 
 
-# --- Argumentos Padrão da DAG ---
 default_args = {
     "owner": "Data Engineering",
     "depends_on_past": False,
@@ -31,8 +28,6 @@ default_args = {
     "retries": 1,
     "retry_delay": timedelta(minutes=5),
 }
-
-# --- Funções Helper Reutilizáveis (Copiadas da outra DAG) ---
 
 def _get_api_credentials():
     """Busca as credenciais da API do CRM."""
@@ -66,24 +61,21 @@ def _load_to_postgres(df: pd.DataFrame, table_name: str):
     for col in df.select_dtypes(include=['datetimetz']):
         df[col] = df[col].dt.tz_convert(None)
     
-    # MELHOR PRÁTICA: Lógica incremental usa 'append'
-    # A etapa 'transform' será responsável pela de-duplicação (MERGE/UPSERT)
     df.to_sql(
         name=table_name,
         con=engine,
-        if_exists="append", # <-- Lógica INCREMENTAL CORRETA (sem TRUNCATE)
+        if_exists="append", 
         index=False,
         schema=DW_SCHEMA
     )
     log.info(f"Carga para {table_name} concluída.")
 
-# --- Definição Clássica da DAG ---
 with DAG(
     dag_id="crm_incremental_ingestion",
     default_args=default_args,
     start_date=datetime(2024, 1, 1),
-    schedule="0 4 * * *",  # Todo dia às 4 da manhã
-    catchup=True, # <-- MELHOR PRÁTICA: Incremental faz backfill
+    schedule="0 4 * * *", 
+    catchup=True, 
     tags=["crm", "ingestion", "facts", "elt"],
     max_active_runs=1,
 ) as dag:
@@ -93,7 +85,6 @@ with DAG(
     A etapa 'Transform' é responsável por aplicar o MERGE/UPSERT na tabela final.
     """
 
-    # --- TaskGroup para Leads ---
     with TaskGroup(group_id="leads_group") as leads_group:
         @task(task_id="extract_leads")
         def extract_leads(data_interval_start: str, data_interval_end: str) -> dict:
@@ -120,7 +111,6 @@ with DAG(
 
         @task(task_id="load_leads")
         def load_leads(dataframes_dict: dict):
-            # --- LÓGICA DE CARGA CORRETA (SEM TRUNCATE) ---
             _load_to_postgres(dataframes_dict['leads'], "stg_crm_leads")
             _load_to_postgres(dataframes_dict['custom_fields'], "stg_crm_leads_custom_fields")
             _load_to_postgres(dataframes_dict['tags'], "stg_crm_leads_tags")
@@ -129,7 +119,6 @@ with DAG(
         def transform_leads():
             log.info("Placeholder: Rodando dbt model para fato_leads e de-duplicação (MERGE)...")
 
-        # Fluxo de dados (TaskFlow)
         extracted_data_leads = extract_leads(
             data_interval_start="{{ data_interval_start }}",
             data_interval_end="{{ data_interval_end }}"
@@ -137,16 +126,13 @@ with DAG(
         loaded_result_leads = load_leads(extracted_data_leads)
         loaded_result_leads >> transform_leads()
 
-    # --- TaskGroup para Events ---
     with TaskGroup(group_id="events_group") as events_group:
         @task(task_id="extract_events")
         def extract_events(data_interval_start: str, data_interval_end: str) -> pd.DataFrame:
             base_url, api_token = _get_api_credentials()
-            
-            # --- CÓDIGO INCREMENTAL CORRETO (USA AS DATAS DO AIRFLOW) ---
+
             start_date_dt = datetime.fromisoformat(data_interval_start)
             end_date_dt = datetime.fromisoformat(data_interval_end)
-            # --- FIM DA LÓGICA CORRETA ---
             
             log.info(f"Iniciando extração de Events para o intervalo: {start_date_dt} a {end_date_dt}")
             df_events = run_events_extraction(
@@ -167,7 +153,6 @@ with DAG(
         def transform_events():
             log.info("Placeholder: Rodando dbt model para fato_events...")
 
-        # Fluxo de dados (TaskFlow)
         extracted_data_events = extract_events(
             data_interval_start="{{ data_interval_start }}",
             data_interval_end="{{ data_interval_end }}"
@@ -175,5 +160,4 @@ with DAG(
         loaded_result_events = load_events(extracted_data_events)
         loaded_result_events >> transform_events()
 
-    # --- Definindo o Fluxo da DAG ---
     [leads_group, events_group]

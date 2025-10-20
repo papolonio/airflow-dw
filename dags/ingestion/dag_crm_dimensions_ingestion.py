@@ -9,7 +9,6 @@ from airflow.exceptions import AirflowNotFoundException
 from airflow.providers.postgres.hooks.postgres import PostgresHook
 from airflow.utils.task_group import TaskGroup
 
-# Importa as funções específicas do nosso "motor"
 from crm_extractor.extractor import (
     run_pipelines_extraction,
     run_users_extraction,
@@ -18,12 +17,10 @@ from crm_extractor.extractor import (
 
 log = logging.getLogger(__name__)
 
-# --- Constantes ---
 API_CONN_ID = "crm_kommo_api"
 DW_CONN_ID = "postgres_dw"
-DW_SCHEMA = "public" # Schema de Staging
+DW_SCHEMA = "public" 
 
-# --- Argumentos Padrão da DAG ---
 default_args = {
     "owner": "Data Engineering",
     "depends_on_past": False,
@@ -33,7 +30,6 @@ default_args = {
     "retry_delay": timedelta(minutes=5),
 }
 
-# --- Funções Helper Reutilizáveis ---
 
 def _get_api_credentials():
     """Busca as credenciais da API do CRM."""
@@ -66,25 +62,22 @@ def _load_to_postgres(df: pd.DataFrame, table_name: str):
 
     for col in df.select_dtypes(include=['datetimetz']):
         df[col] = df[col].dt.tz_convert(None)
-    
-    # Lógica de Full Refresh: Apaga e recarrega
+
     df.to_sql(
         name=table_name,
         con=engine,
-        if_exists="replace", # TRUNCATE + INSERT
+        if_exists="replace", 
         index=False,
         schema=DW_SCHEMA
     )
     log.info(f"Carga para {table_name} concluída.")
 
-
-# --- Definição Clássica da DAG ---
 with DAG(
     dag_id="crm_dimensions_ingestion",
     default_args=default_args,
     start_date=datetime(2025, 1, 1),
-    schedule="0 3 * * *",  # Todo dia às 3 da manhã
-    catchup=False, # <-- MELHOR PRÁTICA: Full Refresh não faz backfill
+    schedule="0 3 * * *", 
+    catchup=False, 
     tags=["crm", "ingestion", "dimensions", "elt"],
     max_active_runs=1,
 ) as dag:
@@ -93,7 +86,6 @@ with DAG(
     Realiza um FULL REFRESH (Truncate + Insert) diário nas tabelas de staging.
     """
 
-    # --- TaskGroup para Pipelines ---
     with TaskGroup(group_id="pipelines_group") as pipelines_group:
         @task(task_id="extract_pipelines")
         def extract_pipelines() -> pd.DataFrame:
@@ -109,13 +101,11 @@ with DAG(
         @task(task_id="transform_pipelines")
         def transform_pipelines():
             log.info("Placeholder: Rodando dbt model para dim_pipelines...")
-            
-        # Fluxo de dados (TaskFlow)
+
         extracted_df_pipelines = extract_pipelines()
         loaded_result_pipelines = load_pipelines(extracted_df_pipelines)
         loaded_result_pipelines >> transform_pipelines()
 
-    # --- TaskGroup para Users ---
     with TaskGroup(group_id="users_group") as users_group:
         @task(task_id="extract_users")
         def extract_users() -> pd.DataFrame:
@@ -132,12 +122,10 @@ with DAG(
         def transform_users():
             log.info("Placeholder: Rodando dbt model para dim_users...")
 
-        # Fluxo de dados (TaskFlow)
         extracted_df_users = extract_users()
         loaded_result_users = load_users(extracted_df_users)
         loaded_result_users >> transform_users()
 
-    # --- TaskGroup para Catalogs ---
     with TaskGroup(group_id="catalogs_group") as catalogs_group:
         @task(task_id="extract_catalogs")
         def extract_catalogs() -> pd.DataFrame:
@@ -154,11 +142,8 @@ with DAG(
         def transform_catalogs():
             log.info("Placeholder: Rodando dbt model para dim_catalogs...")
 
-        # Fluxo de dados (TaskFlow)
         extracted_df_catalogs = extract_catalogs()
         loaded_result_catalogs = load_catalogs(extracted_df_catalogs)
         loaded_result_catalogs >> transform_catalogs()
 
-    # --- Definindo o Fluxo da DAG ---
-    # As 3 extrações de dimensão rodam em paralelo
     [pipelines_group, users_group, catalogs_group]
