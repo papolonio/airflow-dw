@@ -11,7 +11,7 @@ from datetime import datetime
 from requests.exceptions import JSONDecodeError
 
 # Configurações
-MAX_THREADS = 8
+MAX_THREADS = 2
 PAGE_LIMIT = 250
 log = logging.getLogger(__name__)
 
