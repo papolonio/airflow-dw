@@ -7,11 +7,9 @@ from airflow.decorators import task
 from airflow.hooks.base import BaseHook
 from airflow.exceptions import AirflowNotFoundException
 from airflow.providers.postgres.hooks.postgres import PostgresHook
-# Importa o operador necessário para rodar SQL
-from airflow.providers.postgres.operators.postgres import PostgresOperator # <-- ADICIONADO
+from airflow.providers.postgres.operators.postgres import PostgresOperator
 from airflow.utils.task_group import TaskGroup
 
-# Importa as funções de extração
 from crm_extractor.extractor import (
     run_leads_extraction,
     run_events_extraction
@@ -19,12 +17,10 @@ from crm_extractor.extractor import (
 
 log = logging.getLogger(__name__)
 
-# --- Constantes ---
 API_CONN_ID = "crm_kommo_api"
 DW_CONN_ID = "postgres_dw"
-DW_SCHEMA = "public" # Schema de Staging
+DW_SCHEMA = "public"
 
-# --- Argumentos Padrão ---
 default_args = {
     "owner": "Data Engineering",
     "depends_on_past": False,
@@ -34,7 +30,6 @@ default_args = {
     "retry_delay": timedelta(minutes=5),
 }
 
-# --- Funções Helper ---
 def _get_api_credentials():
     log.info(f"Buscando credenciais da Conexão Airflow '{API_CONN_ID}'...")
     try:
@@ -60,22 +55,20 @@ def _load_to_postgres(df: pd.DataFrame, table_name: str):
     except AirflowNotFoundException:
         log.error(f"ERRO CRÍTICO: Conexão '{DW_CONN_ID}' não encontrada.")
         raise
-    for col in df.select_dtypes(include=['datetimetz']):
+    for col in df.select_dtypes(include=["datetimetz"]):
         df[col] = df[col].dt.tz_convert(None)
     df.to_sql(name=table_name, con=engine, if_exists="append", index=False, schema=DW_SCHEMA)
     log.info(f"Carga para {table_name} concluída.")
 
-# --- Definição da DAG ---
 with DAG(
     dag_id="crm_incremental_ingestion",
     default_args=default_args,
-    start_date=datetime(2024, 1, 1), # <-- Note que sua start_date original era 2024
+    start_date=datetime(2024, 1, 1),
     schedule="0 4 * * *",
     catchup=True,
     tags=["crm", "ingestion", "facts", "elt"],
     max_active_runs=1,
-    # Informa ao Airflow onde procurar pelos arquivos .sql
-    template_searchpath="/opt/airflow/dags" # <-- ADICIONADO
+    template_searchpath="/opt/airflow/dags"
 ) as dag:
     """
     DAG para extrair dados incrementais (Leads, Events) do CRM.
@@ -83,9 +76,9 @@ with DAG(
     Executa a transformação para aplicar o MERGE/UPSERT nas tabelas finais.
     """
 
-    # --- Grupo: Leads ---
     with TaskGroup(group_id="leads_group") as leads_group:
-        @task(task_id="extract_leads")
+        
+        @task(task_id="extract_leads", show_return_value_in_logs=False)
         def extract_leads(data_interval_start: str, data_interval_end: str) -> dict:
             base_url, api_token = _get_api_credentials()
             start_date_dt = datetime.fromisoformat(data_interval_start)
@@ -103,7 +96,6 @@ with DAG(
             _load_to_postgres(dataframes_dict['custom_fields'], "stg_crm_leads_custom_fields")
             _load_to_postgres(dataframes_dict['tags'], "stg_crm_leads_tags")
 
-        # Tasks de Transformação - Executam os SQLs
         transform_fct_leads = PostgresOperator(
             task_id="transform_fct_leads",
             postgres_conn_id=DW_CONN_ID,
@@ -120,17 +112,17 @@ with DAG(
             sql="sql/transform_fct_leads_tags.sql"
         )
 
-        # Define o fluxo E -> L -> [T1, T2, T3] (Transformações em paralelo)
         extracted_data = extract_leads(
             data_interval_start="{{ data_interval_start }}",
             data_interval_end="{{ data_interval_end }}"
         )
         loaded_data = load_leads(extracted_data)
+        
         loaded_data >> [transform_fct_leads, transform_fct_leads_cf, transform_fct_leads_tags]
 
-    # --- Grupo: Events ---
     with TaskGroup(group_id="events_group") as events_group:
-        @task(task_id="extract_events")
+        
+        @task(task_id="extract_events", show_return_value_in_logs=False)
         def extract_events(data_interval_start: str, data_interval_end: str) -> pd.DataFrame:
             base_url, api_token = _get_api_credentials()
             start_date_dt = datetime.fromisoformat(data_interval_start)
@@ -146,20 +138,18 @@ with DAG(
         def load_events(df: pd.DataFrame):
             _load_to_postgres(df, "stg_crm_events")
 
-        # Task de Transformação - Executa o SQL
         transform_events = PostgresOperator(
-            task_id="transform_fct_events", # Nome mais descritivo
+            task_id="transform_fct_events",
             postgres_conn_id=DW_CONN_ID,
             sql="sql/transform_fct_events.sql"
         )
 
-        # Define o fluxo E -> L -> T
         extracted_data_ev = extract_events(
             data_interval_start="{{ data_interval_start }}",
             data_interval_end="{{ data_interval_end }}"
         )
         loaded_data_ev = load_events(extracted_data_ev)
+        
         loaded_data_ev >> transform_events
 
-    # Define que os grupos rodam em paralelo
     [leads_group, events_group]

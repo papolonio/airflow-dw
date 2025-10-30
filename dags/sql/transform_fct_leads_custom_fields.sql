@@ -1,7 +1,6 @@
 WITH latest_cf_staging AS (
     SELECT
         *,
-        -- Pega o valor mais recente (baseado no created_at do lead) para cada par (id, field_name)
         ROW_NUMBER() OVER(PARTITION BY id, field_name ORDER BY created_at DESC) as rn
     FROM
         public.stg_crm_leads_custom_fields

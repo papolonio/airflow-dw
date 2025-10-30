@@ -15,7 +15,6 @@ MAX_THREADS = 2
 PAGE_LIMIT = 250
 log = logging.getLogger(__name__)
 
-# --- 1. CORE EXTRACTION HELPERS (O que já tínhamos) ---
 
 def create_session_with_retries(token: str) -> requests.Session:
     """Cria uma sessão de requests com retries automáticos."""
